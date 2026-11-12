@@ -1,5 +1,5 @@
 /** Digital Display OCR — original implementation, MIT, azolazol. No network or dependencies. */
-export const VERSION='0.1.0';
+export const VERSION='0.1.1';
 export const DIGITS=['1111110','0110000','1101101','1111001','0110011','1011011','1011111','1110000','1111111','1111011'];
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export function renderDigit(digit,w=32,h=48,{thickness=.13,slant=0,tail7=false}={}){
@@ -14,11 +14,20 @@ function extrema(src,w,h,r,max){
  const pass=(input,output,length,lines,stride,step)=>{for(let line=0;line<lines;line++){let head=0,tail=0,next=0;for(let i=0;i<length;i++){const end=Math.min(length-1,i+r);for(;next<=end;next++){const v=input[line*step+next*stride];while(tail>head&&(max?input[line*step+queue[tail-1]*stride]<=v:input[line*step+queue[tail-1]*stride]>=v))tail--;queue[tail++]=next;}while(queue[head]<i-r)head++;output[line*step+i*stride]=input[line*step+queue[head]*stride];}}};
  pass(src,horizontal,w,h,1,w);pass(horizontal,out,h,w,w,1);return out;
 }
-export function binarize(image,{sensitivity=.82,invert=false,radius}={}){
+function otsuThreshold(gray){
+ const hist=new Uint32Array(256);let sum=0;for(const v of gray){const n=Math.round(v);hist[n]++;sum+=n;}let count=0,partial=0,best=-1,threshold=0;
+ for(let t=0;t<255;t++){count+=hist[t];partial+=t*hist[t];if(!count||count===gray.length)continue;const diff=partial/count-(sum-partial)/(gray.length-count),variance=count*(gray.length-count)*diff*diff;if(variance>best){best=variance;threshold=t;}}return threshold;
+}
+export function binarize(image,{sensitivity=.82,invert=false,radius,preprocessing='adaptive'}={}){
  const {width:w,height:h,data}=image;if(!Number.isInteger(w)||!Number.isInteger(h)||w<2||h<2||w*h>4e6||data.length!==w*h*4)throw Error('Invalid RGBA image (maximum 4 million pixels)');
  const gray=new Float32Array(w*h);let min=255,max=0;for(let i=0;i<gray.length;i++){const p=i*4;const v=.299*data[p]+.587*data[p+1]+.114*data[p+2];gray[i]=invert?255-v:v;min=Math.min(min,gray[i]);max=Math.max(max,gray[i]);}
  if(max-min<8)return new Uint8Array(w*h);
- const r=radius??Math.max(3,Math.round(Math.min(w,h)*.025)),bg=extrema(extrema(gray,w,h,r,true),w,h,r,false),mask=new Uint8Array(w*h);
+ const mask=new Uint8Array(w*h);
+ if(preprocessing==='otsu'){const threshold=otsuThreshold(gray)+(sensitivity-.82)*64;for(let i=0;i<mask.length;i++)mask[i]=gray[i]<=threshold?1:0;return mask;}
+ // The closing window must span a full stroke, not just its outline.
+ // A 2.5% radius erased the centres of large LCD segments. Use a broad
+ // image-relative neighbourhood; closing fills dark strokes before comparison.
+ const r=radius??Math.max(6,Math.round(Math.min(w,h)*.12)),bg=extrema(extrema(gray,w,h,r,true),w,h,r,false);
  for(let i=0;i<mask.length;i++)mask[i]=bg[i]-gray[i]>8&&gray[i]<bg[i]*sensitivity?1:0;return mask;
 }
 function runs(values,threshold,gap=1){const found=[];let first=-1,last=-1;for(let i=0;i<=values.length;i++){if(i<values.length&&values[i]>=threshold){if(first<0)first=i;last=i;}else if(first>=0&&(i-last>gap||i===values.length)){found.push([first,last]);first=-1;}}return found;}
@@ -67,3 +76,4 @@ export function recognizeDisplay(image,{roi,fieldRois,...options}={}){
  for(const [a,b] of bands){if(b-a+1<(options.minHeight??10))continue;const pad=Math.max(2,Math.round((b-a)*.1));groups.push(readRow(mask,w,h,{x:left,y:Math.max(top,top+a-pad),width:right-left,height:Math.min(bottom,top+b+pad+1)-Math.max(top,top+a-pad)},options));}
  const result=assignFields(groups);return {...result,version:VERSION,mask,width:w,height:h,candidates:groups};
 }
+
