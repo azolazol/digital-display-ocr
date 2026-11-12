@@ -1,5 +1,5 @@
 /** Digital Display OCR — original implementation, MIT, azolazol. No network or dependencies. */
-export const VERSION='0.1.1';
+export const VERSION='0.1.2';
 export const DIGITS=['1111110','0110000','1101101','1111001','0110011','1011011','1011111','1110000','1111111','1111011'];
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export function renderDigit(digit,w=32,h=48,{thickness=.13,slant=0,tail7=false}={}){
@@ -18,12 +18,28 @@ function otsuThreshold(gray){
  const hist=new Uint32Array(256);let sum=0;for(const v of gray){const n=Math.round(v);hist[n]++;sum+=n;}let count=0,partial=0,best=-1,threshold=0;
  for(let t=0;t<255;t++){count+=hist[t];partial+=t*hist[t];if(!count||count===gray.length)continue;const diff=partial/count-(sum-partial)/(gray.length-count),variance=count*(gray.length-count)*diff*diff;if(variance>best){best=variance;threshold=t;}}return threshold;
 }
-export function binarize(image,{sensitivity=.82,invert=false,radius,preprocessing='adaptive'}={}){
+// Remove only thin components anchored to the photo boundary; retain clipped glyphs.
+export function removeBorderLines(mask,w,h){
+ const seen=new Uint8Array(mask.length),queue=new Int32Array(mask.length);
+ for(let seed=0;seed<mask.length;seed++){if(!mask[seed]||seen[seed])continue;let head=0,tail=1,minX=w,maxX=0,minY=h,maxY=0,edge=false;queue[0]=seed;seen[seed]=1;
+ while(head<tail){const i=queue[head++],x=i%w,y=Math.floor(i/w);minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);edge ||= x===0||y===0||x===w-1||y===h-1;
+ for(const n of [x>0?i-1:-1,x<w-1?i+1:-1,y>0?i-w:-1,y<h-1?i+w:-1])if(n>=0&&mask[n]&&!seen[n]){seen[n]=1;queue[tail++]=n;}}
+ const bw=maxX-minX+1,bh=maxY-minY+1,thin=bw<=w*.025||bh<=h*.025,frame=bw>w*.8&&bh>h*.8&&tail/(bw*bh)<.08;
+ const cornerStripe=minY===0&&(minX===0||maxX===w-1)&&bw<w*.07&&tail/(bw*bh)<.35;
+ if(edge&&(thin||frame||cornerStripe))for(let k=0;k<tail;k++)mask[queue[k]]=0;
+ }return mask;
+}
+function segmentScores(mask){
+ const zones=[[.28,.02,.72,.15],[.7,.2,1,.4],[.7,.6,1,.8],[.28,.85,.72,.98],[0,.6,.3,.8],[0,.2,.3,.4],[.28,.43,.72,.57]];
+ const levels=zones.map(([x0,y0,x1,y1])=>{let n=0,total=0;for(let y=Math.floor(y0*48);y<y1*48;y++)for(let x=Math.floor(x0*32);x<x1*32;x++){n+=mask[y*32+x];total++;}return Math.min(1,n/total/.48);});
+ return DIGITS.map(bits=>levels.reduce((a,v,i)=>a+(bits[i]==='1'?v:1-v),0)/7);
+}
+export function binarize(image,{sensitivity=.82,invert=false,radius,preprocessing='otsu'}={}){
  const {width:w,height:h,data}=image;if(!Number.isInteger(w)||!Number.isInteger(h)||w<2||h<2||w*h>4e6||data.length!==w*h*4)throw Error('Invalid RGBA image (maximum 4 million pixels)');
  const gray=new Float32Array(w*h);let min=255,max=0;for(let i=0;i<gray.length;i++){const p=i*4;const v=.299*data[p]+.587*data[p+1]+.114*data[p+2];gray[i]=invert?255-v:v;min=Math.min(min,gray[i]);max=Math.max(max,gray[i]);}
  if(max-min<8)return new Uint8Array(w*h);
  const mask=new Uint8Array(w*h);
- if(preprocessing==='otsu'){const threshold=otsuThreshold(gray)+(sensitivity-.82)*64;for(let i=0;i<mask.length;i++)mask[i]=gray[i]<=threshold?1:0;return mask;}
+ if(preprocessing==='otsu'){const threshold=otsuThreshold(gray)+(sensitivity-.82)*64;for(let i=0;i<mask.length;i++)mask[i]=gray[i]<=threshold?1:0;return removeBorderLines(mask,w,h);}
  // The closing window must span a full stroke, not just its outline.
  // A 2.5% radius erased the centres of large LCD segments. Use a broad
  // image-relative neighbourhood; closing fills dark strokes before comparison.
@@ -43,6 +59,7 @@ export function matchGlyph(mask,{profile=[],minScore=.55,minMargin=.035}={}){
  const counts=new Array(10).fill(0),sources=new Array(10).fill('standard');let ink=0;for(const v of mask)ink+=v;if(ink<15)return {digit:null,score:0,margin:0,alternatives:[],reason:'blank'};
  const custom=validateProfile(profile);
  for(const t of [...templates(),...custom]){let intersect=0,union=0;for(let i=0;i<mask.length;i++){if(mask[i]&&t.mask[i])intersect++;if(mask[i]||t.mask[i])union++;}const score=union?intersect/union:0;if(score>counts[t.digit]){counts[t.digit]=score;sources[t.digit]=custom.includes(t)?'custom':'standard';}}
+ const geometry=segmentScores(mask);if(!custom.length)for(let d=0;d<10;d++)counts[d]=.55*counts[d]+.45*geometry[d];
  const ranked=counts.map((score,digit)=>({digit,score,source:sources[digit]})).sort((a,b)=>b.score-a.score),best=ranked[0],margin=best.score-ranked[1].score;
  return {...best,digit:best.score>=minScore&&margin>=minMargin?best.digit:null,margin,alternatives:ranked.slice(0,3),reason:best.score<minScore?'poor-match':margin<minMargin?'ambiguous':null};
 }
