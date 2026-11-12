@@ -1,5 +1,5 @@
 /** Digital Display OCR — original implementation, MIT, azolazol. No network or dependencies. */
-export const VERSION='0.1.3';
+export const VERSION='0.1.4';
 export const DIGITS=['1111110','0110000','1101101','1111001','0110011','1011011','1011111','1110000','1111111','1111011'];
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export function renderDigit(digit,w=32,h=48,{thickness=.13,slant=0,tail7=false}={}){
@@ -34,12 +34,12 @@ function segmentScores(mask){
  const levels=zones.map(([x0,y0,x1,y1])=>{let n=0,total=0;for(let y=Math.floor(y0*48);y<y1*48;y++)for(let x=Math.floor(x0*32);x<x1*32;x++){n+=mask[y*32+x];total++;}return Math.min(1,n/total/.48);});
  return DIGITS.map(bits=>levels.reduce((a,v,i)=>a+(bits[i]==='1'?v:1-v),0)/7);
 }
-export function binarize(image,{sensitivity=.82,invert=false,radius,preprocessing='otsu'}={}){
+export function binarize(image,{sensitivity=.82,invert=false,radius,brightnessThreshold,preprocessing='otsu'}={}){
  const {width:w,height:h,data}=image;if(!Number.isInteger(w)||!Number.isInteger(h)||w<2||h<2||w*h>4e6||data.length!==w*h*4)throw Error('Invalid RGBA image (maximum 4 million pixels)');
  const gray=new Float32Array(w*h);let min=255,max=0;for(let i=0;i<gray.length;i++){const p=i*4;const v=.299*data[p]+.587*data[p+1]+.114*data[p+2];gray[i]=invert?255-v:v;min=Math.min(min,gray[i]);max=Math.max(max,gray[i]);}
  if(max-min<8)return new Uint8Array(w*h);
  const mask=new Uint8Array(w*h);
- if(preprocessing==='otsu'){const threshold=otsuThreshold(gray)+(sensitivity-.82)*64;for(let i=0;i<mask.length;i++)mask[i]=gray[i]<=threshold?1:0;return removeBorderLines(mask,w,h);}
+ if(preprocessing==='otsu'){const threshold=(brightnessThreshold??otsuThreshold(gray))+(sensitivity-.82)*64;for(let i=0;i<mask.length;i++)mask[i]=gray[i]<=threshold?1:0;return removeBorderLines(mask,w,h);}
  // The closing window must span a full stroke, not just its outline.
  // A 2.5% radius erased the centres of large LCD segments. Use a broad
  // image-relative neighbourhood; closing fills dark strokes before comparison.
@@ -86,7 +86,7 @@ export function assignFields(groups){
 }
 export function recognizeDisplay(image,{roi,fieldRois,...options}={}){
  const {width:w,height:h}=image,mask=binarize(image,options),area=roi??{x:0,y:0,width:w,height:h};let groups=[];
- if(fieldRois){groups=['sys','dia','pulse'].map(k=>fieldRois[k]?readRow(mask,w,h,fieldRois[k],options):{value:null,digits:[],reason:'no-field-box'});const [a,b,c]=groups;return {version:VERSION,mask,width:w,height:h,candidates:groups,sys:a.value,dia:b.value,pulse:c.value,status:groups.every(g=>g.value!==null)?(a.value>b.value?'candidate':'review'):'incomplete',reason:'Explicit field boxes; compare the original before use'};}
+ if(fieldRois){groups=['sys','dia','pulse'].map(k=>{if(!fieldRois[k])return {value:null,digits:[],reason:'no-field-box'};const tile=cropRgba(image,fieldRois[k]),localMask=binarize(tile,options),row=readRow(localMask,tile.width,tile.height,{x:0,y:0,width:tile.width,height:tile.height},options);for(let y=0;y<tile.height;y++)mask.set(localMask.subarray(y*tile.width,(y+1)*tile.width),(tile.y+y)*w+tile.x);const move=b=>({...b,x:b.x+tile.x,y:b.y+tile.y});return {...row,box:move(row.box),digits:row.digits.map(d=>({...d,box:move(d.box)}))};});const [a,b,c]=groups;return {version:VERSION,mask,width:w,height:h,candidates:groups,sys:a.value,dia:b.value,pulse:c.value,status:groups.every(g=>g.value!==null)?(a.value>b.value?'candidate':'review'):'incomplete',reason:'Explicit field boxes; compare the original before use'};}
  const top=clamp(Math.round(area.y),0,h-1),bottom=clamp(Math.round(area.y+area.height),top+1,h),left=clamp(Math.round(area.x),0,w-1),right=clamp(Math.round(area.x+area.width),left+1,w),rows=new Uint32Array(bottom-top);
  for(let y=top;y<bottom;y++)for(let x=left;x<right;x++)rows[y-top]+=mask[y*w+x];
  const bands=runs(rows,Math.max(2,(right-left)*.015),Math.max(1,Math.round((bottom-top)*.03)));
@@ -99,9 +99,37 @@ export function lineToRoi(mask,w,h,points){
  if(!Array.isArray(points)||points.length<2||points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)))return null;
  const xs=points.map(p=>p.x),ys=points.map(p=>p.y),span=Math.max(...xs)-Math.min(...xs);if(span<Math.max(8,w*.025))return null;
  const cy=ys.reduce((a,b)=>a+b,0)/ys.length,left=clamp(Math.floor(Math.min(...xs)-span*.25),0,w-1),right=clamp(Math.ceil(Math.max(...xs)+span*.25),left+1,w),rows=new Uint32Array(h);
- for(let y=0;y<h;y++)for(let x=left;x<right;x++)rows[y]+=mask[y*w+x];
- const bands=runs(rows,Math.max(2,(right-left)*.02),Math.max(2,Math.round(h*.022))).filter(([a,b])=>b-a>=8);
+ const scanLeft=clamp(Math.ceil(Math.min(...xs)+span*.03),left,right-1),scanRight=clamp(Math.floor(Math.max(...xs)-span*.03),scanLeft+1,right);
+ for(let y=0;y<h;y++)for(let x=scanLeft;x<scanRight;x++)rows[y]+=mask[y*w+x];
+ const bands=runs(rows,Math.max(2,(right-left)*.02),Math.max(2,Math.round(span*.078))).filter(([a,b])=>b-a>=8);
  const distance=([a,b])=>cy<a?a-cy:cy>b?cy-b:0;bands.sort((a,b)=>distance(a)-distance(b));
  const band=bands[0];if(!band||distance(band)>h*.1)return null;
  const [a,b]=band,pad=Math.max(4,Math.round((b-a)*.1));return {x:left,y:Math.max(0,a-pad),width:right-left,height:Math.min(h,b+pad+1)-Math.max(0,a-pad)};
+}
+// Estimate digit/background contrast locally, so a grey LCD on a white photo
+// is not classified as one solid foreground component.
+function cropRgba(image,box){
+ const x=clamp(Math.floor(box.x),0,image.width-1),y=clamp(Math.floor(box.y),0,image.height-1),width=clamp(Math.ceil(box.width),1,image.width-x),height=clamp(Math.ceil(box.height),1,image.height-y),data=new Uint8ClampedArray(width*height*4);
+ for(let row=0;row<height;row++)data.set(image.data.subarray(((y+row)*image.width+x)*4,((y+row)*image.width+x+width)*4),row*width*4);
+ return {x,y,width,height,data};
+}
+export function imageLineToRoi(image,points,options={}){
+ if(!Array.isArray(points)||points.length<2||points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)))return null;
+ const xs=points.map(p=>p.x),ys=points.map(p=>p.y),span=Math.max(...xs)-Math.min(...xs),cy=ys.reduce((a,b)=>a+b,0)/ys.length;
+ if(span<Math.max(8,image.width*.025))return null;
+ const reach=Math.min(image.height*.18,span*.65+Math.max(8,image.width*.02)),x=Math.max(0,Math.min(...xs)-span*.25),y=Math.max(0,cy-reach),tile=cropRgba(image,{x,y,width:Math.min(image.width-x,span*1.5),height:Math.min(image.height-y,cy+reach-y)});
+ const probe=cropRgba(image,{x:Math.min(...xs),y:Math.max(0,cy-span*.25),width:span,height:Math.min(image.height-Math.max(0,cy-span*.25),span*.5)}),gray=new Float32Array(probe.width*probe.height);for(let i=0;i<gray.length;i++){const v=.299*probe.data[i*4]+.587*probe.data[i*4+1]+.114*probe.data[i*4+2];gray[i]=options.invert?255-v:v;}const threshold=otsuThreshold(gray);
+ const mask=binarize(tile,{...options,brightnessThreshold:threshold,preprocessing:'otsu'});
+ // A panel edge can cross the complete search window. Exclude persistent
+ // columns from row discovery; digit strokes leave space above and below.
+ for(let x=0;x<tile.width;x++){let count=0;for(let y=0;y<tile.height;y++)count+=mask[y*tile.width+x];if(count>=tile.height*.88)for(let y=0;y<tile.height;y++)mask[y*tile.width+x]=0;}
+ const localPoints=points.map(p=>({x:p.x-tile.x,y:p.y-tile.y})),box=lineToRoi(mask,tile.width,tile.height,localPoints);
+ if(!box||box.height>span*1.8||box.y<=0||box.y+box.height>=tile.height)return null;
+ // Tighten the horizontal crop to ink that also crosses the marked row.
+ // This excludes nearby UI text and short fragments of the panel rim.
+ const cols=new Uint32Array(tile.width),center=new Uint32Array(tile.width),mid=cy-tile.y,half=box.height*.18;
+ for(let x=box.x;x<box.x+box.width;x++)for(let y=box.y;y<box.y+box.height;y++){cols[x]+=mask[y*tile.width+x];if(Math.abs(y-mid)<=half)center[x]+=mask[y*tile.width+x];}
+ const groups=runs(cols,Math.max(2,box.height*.12),2).filter(([a,b])=>{let n=0;for(let x=a;x<=b;x++)n+=center[x];return n>=Math.max(2,(b-a+1)*2);});
+ if(!groups.length)return null;const pad=Math.max(4,Math.round(box.height*.06)),left=Math.max(0,groups[0][0]-pad),right=Math.min(tile.width,groups.at(-1)[1]+pad+1);
+ return {...box,x:left+tile.x,y:box.y+tile.y,width:right-left};
 }
