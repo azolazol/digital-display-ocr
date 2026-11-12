@@ -1,5 +1,5 @@
 /** Digital Display OCR — original implementation, MIT, azolazol. No network or dependencies. */
-export const VERSION='0.1.2';
+export const VERSION='0.1.3';
 export const DIGITS=['1111110','0110000','1101101','1111001','0110011','1011011','1011111','1110000','1111111','1111011'];
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export function renderDigit(digit,w=32,h=48,{thickness=.13,slant=0,tail7=false}={}){
@@ -94,3 +94,14 @@ export function recognizeDisplay(image,{roi,fieldRois,...options}={}){
  const result=assignFields(groups);return {...result,version:VERSION,mask,width:w,height:h,candidates:groups};
 }
 
+// A gesture locates a row; the unpainted original image remains the OCR input.
+export function lineToRoi(mask,w,h,points){
+ if(!Array.isArray(points)||points.length<2||points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)))return null;
+ const xs=points.map(p=>p.x),ys=points.map(p=>p.y),span=Math.max(...xs)-Math.min(...xs);if(span<Math.max(8,w*.025))return null;
+ const cy=ys.reduce((a,b)=>a+b,0)/ys.length,left=clamp(Math.floor(Math.min(...xs)-span*.25),0,w-1),right=clamp(Math.ceil(Math.max(...xs)+span*.25),left+1,w),rows=new Uint32Array(h);
+ for(let y=0;y<h;y++)for(let x=left;x<right;x++)rows[y]+=mask[y*w+x];
+ const bands=runs(rows,Math.max(2,(right-left)*.02),Math.max(2,Math.round(h*.022))).filter(([a,b])=>b-a>=8);
+ const distance=([a,b])=>cy<a?a-cy:cy>b?cy-b:0;bands.sort((a,b)=>distance(a)-distance(b));
+ const band=bands[0];if(!band||distance(band)>h*.1)return null;
+ const [a,b]=band,pad=Math.max(4,Math.round((b-a)*.1));return {x:left,y:Math.max(0,a-pad),width:right-left,height:Math.min(h,b+pad+1)-Math.max(0,a-pad)};
+}

@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {removeBorderLines,binarize,renderDigit,matchGlyph,readRow,assignFields,recognizeDisplay,validateProfile} from '../src/engine.js';
+import {lineToRoi,removeBorderLines,binarize,renderDigit,matchGlyph,readRow,assignFields,recognizeDisplay,validateProfile} from '../src/engine.js';
 export function fixture(values=['107','81','80']){const width=300,height=300,data=new Uint8ClampedArray(width*height*4);for(let y=0;y<height;y++)for(let x=0;x<width;x++){const p=(y*width+x)*4;data.set([200+Math.round(y*.08),215,198,255],p);}const rects=[];for(let row=0;row<3;row++){const dh=row===2?42:60,dw=Math.round(dh*.55),gap=10,y=[20,112,212][row],total=values[row].length*(dw+gap)-gap,x0=240-total;rects.push({x:x0-8,y:y-8,width:total+16,height:dh+16});for(let i=0;i<values[row].length;i++){const m=renderDigit(Number(values[row][i]),dw,dh);for(let yy=0;yy<dh;yy++)for(let xx=0;xx<dw;xx++)if(m[yy*dw+xx])data.set([20,26,22,255],((y+yy)*width+x0+i*(dw+gap)+xx)*4);}}return {image:{width,height,data},rects};}
 for(let d=0;d<10;d++)test('template '+d,()=>assert.equal(matchGlyph(renderDigit(d)).digit,d));
 test('blank does not match',()=>assert.equal(matchGlyph(new Uint8Array(1536)).digit,null));
@@ -24,3 +24,6 @@ test('default preprocessing reads synthetic display without radius override',()=
 
 test('thin edge border is removed without removing central digit ink',()=>{const w=100,h=100,m=new Uint8Array(w*h);for(let y=0;y<h;y++)m[y*w+99]=1;for(let y=20;y<70;y++)for(let x=50;x<60;x++)m[y*w+x]=1;removeBorderLines(m,w,h);assert.equal(m[50*w+99],0);assert.equal(m[50*w+55],1);});
 test('substantial clipped glyph is retained for crop-edge rejection',()=>{const w=100,h=100,m=new Uint8Array(w*h);for(let y=0;y<60;y++)for(let x=30;x<50;x++)m[y*w+x]=1;removeBorderLines(m,w,h);assert.equal(m[30*w+40],1);});
+
+test('three line gestures select whole rows from original pixels',()=>{const {image}=fixture(),mask=binarize(image);const fieldRois={};for(const [key,y,x]of [['sys',50,130],['dia',140,175],['pulse',233,190]]){fieldRois[key]=lineToRoi(mask,300,300,[{x,y},{x:232,y}]);assert.ok(fieldRois[key]);}const r=recognizeDisplay(image,{fieldRois});assert.deepEqual([r.sys,r.dia,r.pulse],[107,81,80]);});
+test('tap or blank line does not invent a selected row',()=>{assert.equal(lineToRoi(new Uint8Array(300*300),300,300,[{x:30,y:30},{x:200,y:30}]),null);assert.equal(lineToRoi(new Uint8Array(300*300),300,300,[{x:30,y:30},{x:31,y:30}]),null);});

@@ -1,2 +1,2 @@
-{"name":"digital-display-ocr","version":"0.1.2","type":"module","private":true,"description":"Offline seven-segment template reader and calibration lab","scripts":{"test":"node --test test/*.test.js","build":"node scripts/build.js"}}
+{"name":"digital-display-ocr","version":"0.1.3","type":"module","private":true,"description":"Offline seven-segment template reader and calibration lab","scripts":{"test":"node --test test/*.test.js","build":"node scripts/build.js"}}
 
