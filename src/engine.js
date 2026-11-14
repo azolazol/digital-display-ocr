@@ -1,5 +1,5 @@
 /** Digital Display OCR — original implementation, MIT, azolazol. No network or dependencies. */
-export const VERSION='0.1.4';
+export const VERSION='0.1.5';
 export const DIGITS=['1111110','0110000','1101101','1111001','0110011','1011011','1011111','1110000','1111111','1111011'];
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export function renderDigit(digit,w=32,h=48,{thickness=.13,slant=0,tail7=false}={}){
@@ -132,4 +132,41 @@ export function imageLineToRoi(image,points,options={}){
  const groups=runs(cols,Math.max(2,box.height*.12),2).filter(([a,b])=>{let n=0;for(let x=a;x<=b;x++)n+=center[x];return n>=Math.max(2,(b-a+1)*2);});
  if(!groups.length)return null;const pad=Math.max(4,Math.round(box.height*.06)),left=Math.max(0,groups[0][0]-pad),right=Math.min(tile.width,groups.at(-1)[1]+pad+1);
  return {...box,x:left+tile.x,y:box.y+tile.y,width:right-left};
+}
+
+// Centre-out, overlapping local windows avoid thresholding a grey LCD
+// together with a bright case. Connected strokes supply row bounds before OCR.
+export function recognizeCentered(image,options={}){
+ const {width:w,height:h}=image,area=options.roi??{x:0,y:0,width:w,height:h},groups=[],attempts=[];
+ const windows=[];for(const scale of [.55,.8,1])for(const cx of (scale===1?[.5]:[.5,.35,.65]))windows.push({x:area.x+area.width*Math.max(0,Math.min(1-scale,cx-scale/2)),y:area.y,width:area.width*scale,height:area.height});
+ for(const rect of windows){const tile=cropRgba(image,rect),tw=tile.width,th=tile.height;
+ for(const invert of [!!options.invert,!options.invert]){
+ const gray=Float32Array.from({length:tw*th},(_,i)=>{const v=.299*tile.data[i*4]+.587*tile.data[i*4+1]+.114*tile.data[i*4+2];return invert?255-v:v;}),first=otsuThreshold(gray);
+ const second=otsuThreshold(gray.filter(v=>v<=first));
+ const third=otsuThreshold(gray.filter(v=>v<=second));
+ for(const threshold of [first,second,third,otsuThreshold(gray.filter(v=>v<=third))]){
+ const mask=binarize(tile,{...options,invert,brightnessThreshold:threshold,preprocessing:'otsu'});
+ for(const r of [...new Set([Math.max(1,Math.round(Math.min(tw,th)*.006)),Math.max(2,Math.round(Math.min(tw,th)*.022))])]){const joined=extrema(Float32Array.from(mask),tw,th,r,true),seen=new Uint8Array(tw*th),queue=new Int32Array(tw*th),components=[];
+ for(let p=0;p<joined.length;p++){if(!joined[p]||seen[p])continue;let head=0,tail=0;queue[tail++]=p;seen[p]=1;let l=tw,t=th,rr=0,b=0;while(head<tail){const i=queue[head++],x=i%tw,y=Math.floor(i/tw);l=Math.min(l,x);rr=Math.max(rr,x);t=Math.min(t,y);b=Math.max(b,y);for(const n of [x>0?i-1:-1,x+1<tw?i+1:-1,y>0?i-tw:-1,y+1<th?i+tw:-1])if(n>=0&&joined[n]&&!seen[n]){seen[n]=1;queue[tail++]=n;}}
+ const bh=b-t+1,bw=rr-l+1;if(l<=0||t<=0||rr>=tw-1||b>=th-1||bh<Math.max(12,th*.025)||bh>th*.35||bw<bh*.08||bw>bh*2.5)continue;components.push({x:l,y:t,width:bw,height:bh,pixels:queue.slice(0,tail)});}
+ const rowGroups=[];for(const c of components.sort((a,b)=>b.height-a.height)){let row=rowGroups.find(row=>Math.abs(row[0].y-c.y)<row[0].height*.22&&Math.min(row[0].height,c.height)/Math.max(row[0].height,c.height)>.68);if(row)row.push(c);else rowGroups.push([c]);}
+ for(const cs of rowGroups){const left=Math.min(...cs.map(c=>c.x)),right=Math.max(...cs.map(c=>c.x+c.width)),top=Math.min(...cs.map(c=>c.y)),bottom=Math.max(...cs.map(c=>c.y+c.height)),pad=Math.max(3,r*2),box={x:Math.max(0,left-pad),y:Math.max(0,top-pad),width:Math.min(tw,left-pad+(right-left)+pad*2)-Math.max(0,left-pad),height:Math.min(th,bottom+pad)-Math.max(0,top-pad)};
+ const rowMask=new Uint8Array(tw*th);for(const c of cs)for(const p of c.pixels)rowMask[p]=mask[p];let row=readRow(rowMask,tw,th,box,options);
+ if(row.value===null&&cs.length>=2&&cs.length<=3&&cs.every(c=>c.width<c.height*.95)){
+ const digits=cs.slice().sort((a,b)=>a.x-b.x).map(c=>{let l=tw,t=th,rr=0,b=0;for(const p of c.pixels)if(mask[p]){const x=p%tw,y=Math.floor(p/tw);l=Math.min(l,x);rr=Math.max(rr,x);t=Math.min(t,y);b=Math.max(b,y);}const box={x:l,y:t,width:rr-l+1,height:b-t+1};return {...matchGlyph(normalizeGlyph(rowMask,tw,th,box),options),box};});
+ if(digits.every(d=>d.digit!==null)){const l=Math.min(...digits.map(d=>d.box.x)),t=Math.min(...digits.map(d=>d.box.y)),rr=Math.max(...digits.map(d=>d.box.x+d.box.width)),b=Math.max(...digits.map(d=>d.box.y+d.box.height));row={value:Number(digits.map(d=>d.digit).join('')),digits,score:Math.min(...digits.map(d=>d.score)),reason:null,box:{x:l,y:t,width:rr-l,height:b-t}};}}
+ if(row.value===null)continue;const move=b=>({...b,x:b.x+tile.x,y:b.y+tile.y});row.box=move(row.box);row.digits=row.digits.map(d=>({...d,box:move(d.box)}));row.invert=invert;
+ if(!groups.some(g=>g.value===row.value&&Math.abs(g.box.y-row.box.y)<row.box.height*.25&&Math.abs(g.box.x-row.box.x)<row.box.height*.5))groups.push(row);
+ }
+ attempts.push({window:rect,invert,components:components.length});
+ }}}}
+ const complete=groups.filter(g=>!groups.some(other=>other!==g&&other.box.width>g.box.width*1.3&&Math.abs(other.box.y-g.box.y)<g.box.height*.2&&other.box.x<=g.box.x+3&&other.box.x+other.box.width>=g.box.x+g.box.width-3));
+ const compatible=[];for(const a of complete)for(const b of complete)for(const c of complete){if(a===b||b===c||a===c||a.box.y+a.box.height>b.box.y||b.box.y+b.box.height>c.box.y)continue;const major=(a.box.height+b.box.height)/2,similar=Math.min(a.box.height,b.box.height)/Math.max(a.box.height,b.box.height),right=g=>g.box.x+g.box.width;
+ if(similar<.7||c.box.height>major*1.05||c.box.height<major*.35||Math.max(right(a),right(b),right(c))-Math.min(right(a),right(b),right(c))>major*1.2||c.box.y-(a.box.y+a.box.height)>major*5)continue;
+ const center=Math.abs(((a.box.x+right(a))/2-area.x)/area.width-.5);compatible.push({a,b,c,score:(a.score+b.score+c.score)/3+.12*similar-.04*center});}
+ compatible.sort((a,b)=>b.score-a.score);const best=compatible[0],other=compatible.find(t=>best&&[t.a.value,t.b.value,t.c.value].join('/')!==[best.a.value,best.b.value,best.c.value].join('/'));
+ let result={sys:null,dia:null,pulse:null,status:'incomplete'};
+ if(best){if(other&&best.score-other.score<.035)result.status='ambiguous';else result={sys:best.a.value,dia:best.b.value,pulse:best.c.value,status:best.a.value>best.b.value?'candidate':'review',groups:[best.a,best.b,best.c]};}
+ const mask=binarize(image,options);if(best&&result.groups)for(const row of result.groups){const b=row.box,pad=3,tile=cropRgba(image,{x:b.x-pad,y:b.y-pad,width:b.width+pad*2,height:b.height+pad*2}),m=binarize(tile,{...options,invert:row.invert,preprocessing:'otsu'});for(let y=0;y<tile.height;y++)mask.set(m.subarray(y*tile.width,(y+1)*tile.width),(tile.y+y)*w+tile.x);}
+ return {...result,version:VERSION,mask,width:w,height:h,candidates:result.groups??groups,search:'center-out',attempts};
 }

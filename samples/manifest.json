@@ -1,0 +1,5 @@
+[
+ {"id":"solaris","file":"samples/solaris.jpg","author":"Solaris2006","license":"CC BY-SA 3.0","licenseUrl":"https://creativecommons.org/licenses/by-sa/3.0/","source":"https://commons.wikimedia.org/wiki/File:Digital_Blood_Pressure_Monitor.jpg","changes":"원본 파일 그대로","expected":[122,65,75]},
+ {"id":"ashashyou","file":"samples/ashashyou.jpg","author":"Ashashyou","license":"CC BY-SA 4.0","licenseUrl":"https://creativecommons.org/licenses/by-sa/4.0/","source":"https://commons.wikimedia.org/wiki/File:Blood_pressure_and_pulse_digital_meter.jpg","changes":"긴 변 700px로 축소 후 JPEG 95로 재저장","expected":[128,88,105]},
+ {"id":"adefanike","file":"samples/adefanike.jpg","author":"Adefanike","license":"CC BY-SA 4.0","licenseUrl":"https://creativecommons.org/licenses/by-sa/4.0/","source":"https://commons.wikimedia.org/wiki/File:Blood_pressure_monitor.jpg","changes":"긴 변 700px로 축소 후 JPEG 95로 재저장","expected":[null,null,null]}
+]
